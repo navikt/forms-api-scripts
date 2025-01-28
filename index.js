@@ -17,6 +17,9 @@ const insertFormPromise = (form) => async () => {
   if (!form.properties) {
     console.log(`Skipping form without properties (_id=${form._id} path=${form.path})`)
     return Promise.resolve()
+  } else if (form.properties.skjemanummer.length > 24) {
+    console.log(`[${form.properties.skjemanummer}] Skipping form because skjemanummer is too long (_id=${form._id}, title=${form.title})`)
+    return Promise.resolve()
   }
   const client = await pool.connect()
   try {
@@ -51,7 +54,7 @@ const insertFormPromise = (form) => async () => {
 
   } catch (e) {
     await client.query('ROLLBACK')
-    console.error(`[${form.properties.skjemanummer}] Failed to insert`, e)
+    console.error(`[${form.properties.skjemanummer}] Failed to insert (_id=${form._id})`, e)
   } finally {
     client.release()
   }
