@@ -3,7 +3,7 @@ Nyttige scripts for forms-api.
 
 ## index.js
 
-Importere skjemaer fra formio til forms-api.
+Importere skjemaer og oversettelser fra formio til forms-api.
 
 ## Eksempel .env
 ```
@@ -14,6 +14,8 @@ PGPORT=5442
 PGDATABASE=postgres
 
 FORMIO_BASE_URL=https://formio-api.intern.dev.nav.no/jvcemxwcpghcqjn
+DRY_RUN=true
+#MAX_NUMBER_OF_FORMS=5
 ```
 
 ---
