@@ -7,6 +7,7 @@ dotenv.config()
 
 const dryRun = process.env.DRY_RUN === 'true';
 const maxNumberOfForms = process.env.MAX_NUMBER_OF_FORMS || 1000;
+const maxLengthTranslation = 5120;
 
 const formioBaseUrl = process.env.FORMIO_BASE_URL;
 
@@ -61,7 +62,7 @@ const extractLanguageAndI18n = (data) => {
 };
 
 const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async () => {
-  if (key.length > 2048 || nn?.length > 2048 || en?.length > 2048) {
+  if (key.length > maxLengthTranslation || nn?.length > maxLengthTranslation || en?.length > maxLengthTranslation) {
     scriptSummary.maxTranslationLength = key.length || 0
     if (nn?.length && (nn.length > scriptSummary.maxTranslationLength)) {
       scriptSummary.maxTranslationLength = nn.length
