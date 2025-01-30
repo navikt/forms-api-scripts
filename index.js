@@ -17,6 +17,8 @@ if (!formioBaseUrl) {
   throw new Error(`FORMIO_BASE_URL environment variable is not set`);
 }
 
+let globalTranslationsPublicationId = undefined;
+
 const pool = new Pool()
 
 const extractLanguageAndI18n = (data) => {
@@ -49,7 +51,7 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
     logger.info(`[${skjemanummer}] Skipping translation because key or value is too long [${tooLongKey} ...]`)
     summary.skjemanummer(skjemanummer).tooLongTranslations(`${tooLongKey} ...`, {nn: nn?.length, en: en?.length, key: key.length});
     skippedFormTranslationsCounters[skjemanummer] = (skippedFormTranslationsCounters[skjemanummer] || 0) + 1;
-    return Promise.resolve(false)
+    return Promise.resolve()
   }
   const existsRes = await client.query(
     'SELECT id FROM form_translation WHERE key=$1 AND form_id=$2',
@@ -57,8 +59,10 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
   )
   if (existsRes.rows.length) {
     skippedFormTranslationsCounters[skjemanummer] = (skippedFormTranslationsCounters[skjemanummer] || 0) + 1;
-    return Promise.resolve(false)
+    const revisionRes = await client.query('SELECT id FROM form_translation_revision WHERE form_translation_id=$1 ORDER BY created_at DESC LIMIT 1', [existsRes.rows[0].id]);
+    return Promise.resolve(revisionRes.rows[0].id)
   }
+  let translationRevisionId = undefined
   if (!dryRun) {
     const res = await client.query(
       'INSERT INTO form_translation(form_id, key) VALUES($1,$2) RETURNING id',
@@ -68,7 +72,7 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
       ]
     )
     const translationId = res.rows[0].id
-    await client.query(
+    const translationRevisionRes = await client.query(
       'INSERT INTO form_translation_revision(form_translation_id, revision, nb, nn, en, created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',
       [
         translationId,
@@ -79,8 +83,9 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
         'IMPORT'
       ]
     )
+    translationRevisionId = translationRevisionRes.rows[0].id
   }
-  return Promise.resolve(true)
+  return Promise.resolve(translationRevisionId)
 }
 
 const insertFormPromise = (form) => async () => {
@@ -91,35 +96,43 @@ const insertFormPromise = (form) => async () => {
   }
   const client = await pool.connect()
   try {
+    logger.info(`[${form.properties.skjemanummer}] Importing form...`)
+
     await client.query('BEGIN')
     const existsRes = await client.query('SELECT id FROM form WHERE path=$1', [form.path]);
     let formId = null
+    let formRevisionId = null
     if (existsRes.rows.length) {
       formId = existsRes.rows[0].id
       logger.info(`[${form.properties.skjemanummer}] Skipping insert, form already exists (dbId=${formId})`)
+      const formRevisionRes = await client.query('SELECT id FROM form_revision WHERE form_id=$1 ORDER BY created_at DESC LIMIT 1', [formId]);
+      formRevisionId = formRevisionRes.rows[0].id;
     } else {
       if (!dryRun) {
         const res = await client.query(
-          'INSERT INTO form(skjemanummer, path, created_by) VALUES($1,$2,$3) RETURNING id',
+          'INSERT INTO form(skjemanummer, path, created_at, created_by) VALUES($1,$2,$3,$4) RETURNING id',
           [
             form.properties.skjemanummer,
             form.path,
+            form.created,
             'IMPORT',
           ]
         )
         const {id} = res.rows[0]
         formId = id
-        await client.query(
-          'INSERT INTO form_revision(form_id, revision, title, components, properties, created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',
+        const revisionRes = await client.query(
+          'INSERT INTO form_revision(form_id, revision, title, components, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
           [
             id,
             1,
             form.title,
             JSON.stringify(form.components),
             JSON.stringify(form.properties),
+            form.properties.modified || new Date().toISOString(),
             form.properties.modifiedBy || 'ukjent',
           ]
         )
+        formRevisionId = revisionRes.rows[0].id
       }
     }
     const translations = await formioApi.fetchTranslations(form.path)
@@ -128,10 +141,34 @@ const insertFormPromise = (form) => async () => {
       summary.skjemanummer(form.properties.skjemanummer).moreThanTwoTranslations(translations.length)
     }
     const translationPromises = t.keys.map(key => insertTranslations(client, formId, key, t.nn[key], t.en[key], form.properties.skjemanummer))
-    await Promise.all(translationPromises.map(insertT => insertT()))
+    const translationRevisionIds = (await Promise.all(translationPromises.map(insertT => insertT()))).filter(id => !!id);
+    logger.info(`[${form.properties.skjemanummer}] Form translations imported (${translationRevisionIds.length})`)
+    if (translationRevisionIds.length && !dryRun && form.properties.published && !form.properties.unpublished) {
+      logger.info(`[${form.properties.skjemanummer}] Publishing form and translations (${form.properties.published})...`)
+      const publicationRes = await client.query(
+        'INSERT INTO published_form_translation(form_id, created_at, created_by) VALUES($1,$2,$3) RETURNING id',
+        [formId, form.properties.published, "IMPORT"]
+      )
+      const formTranslationPublicationId = publicationRes.rows[0].id
+      const publishedRevisionValues = translationRevisionIds.map(revisionId => [formTranslationPublicationId, revisionId]);
+      await client.query(
+        pgFormat(
+          'INSERT INTO published_form_translation_revision(published_form_translation_id, form_translation_revision_id) VALUES %L',
+          publishedRevisionValues
+        ),
+        []
+      )
+      await client.query(
+        'INSERT INTO form_publication(form_revision_id, published_form_translation_id, published_global_translation_id, created_at, created_by) VALUES($1,$2,$3,$4,$5) RETURNING id',
+        [formRevisionId, formTranslationPublicationId, globalTranslationsPublicationId, form.properties.published, "IMPORT"]
+      )
+
+    }
+    logger.info(`[${form.properties.skjemanummer}] Form and translations published ok`)
+
     await client.query('COMMIT')
     summary.skjemanummer(form.properties.skjemanummer).successInsert();
-    logger.info(`[${form.properties.skjemanummer}] Form inserted (dbId=${formId}, translations={inserted: ${t.keys.length}, skipped: ${skippedFormTranslationsCounters[form.properties.skjemanummer] || 0}})`)
+    logger.info(`[${form.properties.skjemanummer}] Form imported successfully (dbId=${formId}, translations={inserted: ${t.keys.length}, skipped: ${skippedFormTranslationsCounters[form.properties.skjemanummer] || 0}})`)
   } catch (e) {
     summary.skjemanummer(form.properties.skjemanummer).failedInsert();
     logger.error(`[${form.properties.skjemanummer}] Failed to insert (_id=${form._id})`, e)
@@ -205,8 +242,8 @@ const importGlobalTranslations = async () => {
           'INSERT INTO published_global_translation(created_by) VALUES($1) RETURNING id',
           ["IMPORT"]
         );
-        const publicationId = publicationRes.rows[0].id;
-        const publishedRevisionValues = translationRevisionIds.map(revisionId => [publicationId, revisionId]);
+        globalTranslationsPublicationId = publicationRes.rows[0].id;
+        const publishedRevisionValues = translationRevisionIds.map(revisionId => [globalTranslationsPublicationId, revisionId]);
 
         await client.query(
           pgFormat(
@@ -219,6 +256,10 @@ const importGlobalTranslations = async () => {
       logger.info(`Global translations published ok`)
     } else {
       logger.info(`No new global translations to publish`)
+      if (!dryRun) {
+        const publicationRes = await client.query('SELECT id FROM published_global_translation ORDER BY created_at DESC LIMIT 1');
+        globalTranslationsPublicationId = publicationRes.rows[0].id;
+      }
     }
     await client.query('COMMIT')
     logger.info(`Global translations inserted (${counterNew} new, ${counterExisting} existing)`)
