@@ -2,6 +2,7 @@ import pg from 'pg'
 import config from './src/config.js'
 import logger from './src/logger.js'
 import formioApi from './src/formio-api.js'
+import summary from "./src/summary.js";
 
 const {Pool} = pg;
 
@@ -16,15 +17,6 @@ if (!formioBaseUrl) {
 }
 
 const pool = new Pool()
-
-const scriptSummary = {
-  maxTranslationLength: 0,
-  formsWithTooLongTranslation: [],
-  tooLongSkjemannummer: [],
-  moreThanTwoTranslations: [],
-  failedInsertsSkjemanummer: [],
-  successInsertsSkjemanummer: [],
-}
 
 const extractLanguageAndI18n = (data) => {
   const keys = []
@@ -52,22 +44,9 @@ const extractLanguageAndI18n = (data) => {
 const skippedFormTranslationsCounters = {};
 const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async () => {
   if (key.length > maxLengthTranslation || nn?.length > maxLengthTranslation || en?.length > maxLengthTranslation) {
-    scriptSummary.maxTranslationLength = key.length || 0
-    if (nn?.length && (nn.length > scriptSummary.maxTranslationLength)) {
-      scriptSummary.maxTranslationLength = nn.length
-    }
-    if (en?.length && (en.length > scriptSummary.maxTranslationLength)) {
-      scriptSummary.maxTranslationLength = en.length
-    }
     let tooLongKey = key.substring(0, (key.length > 40 ? 40 : key.length));
     logger.info(`[${skjemanummer}] Skipping translation because key or value is too long [${tooLongKey}...]`)
-    scriptSummary.formsWithTooLongTranslation.push({
-      skjemanummer,
-      tooLongKey,
-      keyLength: key.length,
-      nnLength: nn?.length,
-      enLength: en?.length
-    })
+    summary.skjemanummer(skjemanummer).tooLongTranslations(tooLongKey, {nn: nn?.length, en: en?.length, key: key.length});
     skippedFormTranslationsCounters[skjemanummer] = (skippedFormTranslationsCounters[skjemanummer] || 0) + 1;
     return Promise.resolve(false)
   }
@@ -106,7 +85,7 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
 const insertFormPromise = (form) => async () => {
   if (form.properties.skjemanummer.length > 24) {
     logger.info(`[${form.properties.skjemanummer}] Skipping form because skjemanummer is too long (_id=${form._id}, title=${form.title})`)
-    scriptSummary.tooLongSkjemannummer.push(form.properties.skjemanummer)
+    summary.skjemanummer(form.properties.skjemanummer).tooLong()
     return Promise.resolve()
   }
   const client = await pool.connect()
@@ -145,18 +124,15 @@ const insertFormPromise = (form) => async () => {
     const translations = await formioApi.fetchTranslations(form.path)
     const t = extractLanguageAndI18n(translations);
     if (translations.length > 2) {
-      scriptSummary.moreThanTwoTranslations.push({
-        skjemanummer: form.properties.skjemanummer,
-        numberOfTranslations: translations.length
-      })
+      summary.skjemanummer(form.properties.skjemanummer).moreThanTwoTranslations(translations.length)
     }
     const translationPromises = t.keys.map(key => insertTranslations(client, formId, key, t.nn[key], t.en[key], form.properties.skjemanummer))
     await Promise.all(translationPromises.map(insertT => insertT()))
     await client.query('COMMIT')
-    scriptSummary.successInsertsSkjemanummer.push(form.properties.skjemanummer);
+    summary.skjemanummer(form.properties.skjemanummer).successInsert();
     logger.info(`[${form.properties.skjemanummer}] Form inserted (dbId=${formId}, translations={inserted: ${t.keys.length}, skipped: ${skippedFormTranslationsCounters[form.properties.skjemanummer] || 0}})`)
   } catch (e) {
-    scriptSummary.failedInsertsSkjemanummer.push(form.properties.skjemanummer);
+    summary.skjemanummer(form.properties.skjemanummer).failedInsert();
     logger.error(`[${form.properties.skjemanummer}] Failed to insert (_id=${form._id})`, e)
     await client.query('ROLLBACK')
   } finally {
@@ -235,7 +211,7 @@ const main = async () => {
   } catch (err) {
     logger.error(`Error importing data:`, err)
   } finally {
-    logger.info(`Summary: ${JSON.stringify(scriptSummary)}`)
+    logger.info(`Summary: ${JSON.stringify(summary.get())}`)
     await pool.end()
   }
 }
