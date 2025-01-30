@@ -1,4 +1,5 @@
 import pg from 'pg'
+import pgFormat from 'pg-format'
 import config from './src/config.js'
 import logger from './src/logger.js'
 import formioApi from './src/formio-api.js'
@@ -145,6 +146,7 @@ const importGlobalTranslations = async () => {
   const globalTranslationsMap = await formioApi.fetchGlobalTranslations();
   let counterNew = 0;
   let counterExisting = 0;
+  const translationRevisionIds = [];
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
@@ -160,8 +162,13 @@ const importGlobalTranslations = async () => {
         [key]
       )
       if (existsRes.rows.length) {
-        // global translation already exists
         counterExisting = counterExisting + 1;
+        // global translation already exists, find revision id for possible publication
+        const revisionRes = await client.query(
+          'SELECT id FROM global_translation_revision WHERE global_translation_id=$1',
+          [existsRes.rows[0].id],
+        )
+        translationRevisionIds.push(revisionRes.rows[0].id)
         return Promise.resolve()
       }
       if (!dryRun) {
@@ -173,8 +180,8 @@ const importGlobalTranslations = async () => {
           ]
         )
         const translationId = res.rows[0].id
-        await client.query(
-          'INSERT INTO global_translation_revision(global_translation_id, revision, nb, nn, en, created_by) VALUES($1,$2,$3,$4,$5,$6)',
+        const revisionRes = await client.query(
+          'INSERT INTO global_translation_revision(global_translation_id, revision, nb, nn, en, created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',
           [
             translationId,
             1,
@@ -184,15 +191,41 @@ const importGlobalTranslations = async () => {
             'IMPORT',
           ]
         )
+        const revisionId = revisionRes.rows[0].id
+        translationRevisionIds.push(revisionId)
       }
       counterNew = counterNew + 1;
     });
     await Promise.all(promises.map(f => f()))
+
+    if (translationRevisionIds.length && counterNew > 0) {
+      logger.info(`Publishing global translations...`)
+      if (!dryRun) {
+        const publicationRes = await client.query(
+          'INSERT INTO published_global_translation(created_by) VALUES($1) RETURNING id',
+          ["IMPORT"]
+        );
+        const publicationId = publicationRes.rows[0].id;
+        const publishedRevisionValues = translationRevisionIds.map(revisionId => [publicationId, revisionId]);
+
+        await client.query(
+          pgFormat(
+            'INSERT INTO published_global_translation_revision(published_global_translation_id, global_translation_revision_id) VALUES %L',
+            publishedRevisionValues
+          ),
+          []
+        );
+      }
+      logger.info(`Global translations published ok`)
+    } else {
+      logger.info(`No new global translations to publish`)
+    }
     await client.query('COMMIT')
     logger.info(`Global translations inserted (${counterNew} new, ${counterExisting} existing)`)
   } catch (e) {
     await client.query('ROLLBACK')
-    logger.error(`Failed to insert global translations`, e)
+    logger.error(`Failed to insert and publish global translations`, e)
+    throw e;
   } finally {
     await client.release()
   }
