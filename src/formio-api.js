@@ -16,13 +16,28 @@ const fetchTranslations = async (formPath) => {
   }
 }
 
+const transformGlobalTranslations = (globalTranslations) => {
+  return globalTranslations.reduce((acc, globalTranslation) => {
+    const {language, tag, i18n} = globalTranslation.data;
+    const lang = language === 'nn-NO' ? 'nn' : language
+    const texts = {}
+    Object.entries(i18n).forEach(([key, value]) => {
+      const keyObject = acc[key] || {tag}
+      texts[key] = {...keyObject, [lang]: value}
+    });
+    return {...acc, ...texts}
+  }, {})
+}
+
 const fetchGlobalTranslations = async () => {
   try {
     const response = await fetch(`${formioBaseUrl}/language/submission?data.name=global&limit=1000`)
     if (!response.ok) {
       throw new Error(`Failed to fetch global translations: ${response.statusText}`)
     }
-    return await response.json()
+    let globalLanguageSubmissions = await response.json();
+    logger.info(`Fetched ${globalLanguageSubmissions.length} global language resources from formio-api...`)
+    return transformGlobalTranslations(globalLanguageSubmissions);
   } catch (err) {
     logger.error(`Error fetching global translations:`, err)
     throw err

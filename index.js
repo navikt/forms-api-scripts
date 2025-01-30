@@ -165,30 +165,17 @@ const insertFormPromise = (form) => async () => {
   return Promise.resolve()
 }
 
-const transformGlobalTranslations = (globalTranslation) => {
-  return globalTranslation.reduce((acc, globalTranslation) => {
-    const {language, tag, i18n} = globalTranslation.data;
-    const lang = language === 'nn-NO' ? 'nn' : language
-    const texts = {}
-    Object.entries(i18n).forEach(([key, value]) => {
-      const keyObject = acc[key] || {tag}
-      texts[key] = {...keyObject, [lang]: value}
-    });
-    return {...acc, ...texts}
-  }, {})
-}
-
 const importGlobalTranslations = async () => {
-  const globalTranslations = await formioApi.fetchGlobalTranslations();
-  logger.info(`Processing ${globalTranslations.length} global translations...`)
-  const flattened = transformGlobalTranslations(globalTranslations);
+  const globalTranslationsMap = await formioApi.fetchGlobalTranslations();
   let counterNew = 0;
   let counterExisting = 0;
   const client = await pool.connect()
   try {
     await client.query('BEGIN')
 
-    const promises = Object.entries(flattened).map(([key, tObject]) => async () => {
+    let globalTranslations = Object.entries(globalTranslationsMap);
+    logger.info(`Importing ${globalTranslations.length} global translation keys...`)
+    const promises = globalTranslations.map(([key, tObject]) => async () => {
       const {nn, en, tag} = tObject;
       const nb = tag !== 'validering' ? key : null;
 
