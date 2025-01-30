@@ -1,23 +1,19 @@
-import dotenv from 'dotenv'
 import pg from 'pg'
+import config from './src/config.js'
+import logger from './src/logger.js'
+import formioApi from './src/formio-api.js'
 
 const {Pool} = pg;
 
-dotenv.config()
-
-const dryRun = process.env.DRY_RUN === 'true';
-const maxNumberOfForms = process.env.MAX_NUMBER_OF_FORMS || 1000;
-const maxLengthTranslation = 5120;
-
-const formioBaseUrl = process.env.FORMIO_BASE_URL;
-
+const {
+  dryRun,
+  formioBaseUrl,
+  maxLengthTranslation,
+} = config;
 
 if (!formioBaseUrl) {
   throw new Error(`FORMIO_BASE_URL environment variable is not set`);
 }
-
-const logInfo = (msg) => console.log(`${dryRun ? '[DRYRUN] ' : ''}${msg}`)
-const logError = (msg, err) => console.error(`${dryRun ? '[DRYRUN] ' : ''}${msg}`, err)
 
 const pool = new Pool()
 
@@ -26,32 +22,8 @@ const scriptSummary = {
   formsWithTooLongTranslation: [],
   tooLongSkjemannummer: [],
   moreThanTwoTranslations: [],
-}
-
-const fetchTranslations = async (formPath) => {
-  try {
-    const response = await fetch(`${formioBaseUrl}/language/submission?data.name=global.${formPath}&limit=1000`)
-    if (!response.ok) {
-      throw new Error(`Failed to fetch translations: ${response.statusText}`)
-    }
-    return await response.json()
-  } catch (err) {
-    logError(`Error fetching translations:`, err)
-    throw err
-  }
-}
-
-const fetchGlobalTranslations = async () => {
-  try {
-    const response = await fetch(`${formioBaseUrl}/language/submission?data.name=global&limit=1000`)
-    if (!response.ok) {
-      throw new Error(`Failed to fetch global translations: ${response.statusText}`)
-    }
-    return await response.json()
-  } catch (err) {
-    logError(`Error fetching global translations:`, err)
-    throw err
-  }
+  failedInsertsSkjemanummer: [],
+  successInsertsSkjemanummer: [],
 }
 
 const extractLanguageAndI18n = (data) => {
@@ -70,7 +42,7 @@ const extractLanguageAndI18n = (data) => {
     })
     const lang = language === 'nn-NO' ? 'nn' : language
     if (map[lang] && Object.keys(map[lang]).length) {
-      logInfo(`Duplicate language resource [${lang} - ${form}]`)
+      logger.info(`Duplicate language resource [${lang} - ${form}]`)
     }
     map[lang] = {...map[lang], ...i18n}
   });
@@ -88,7 +60,7 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
       scriptSummary.maxTranslationLength = en.length
     }
     let tooLongKey = key.substring(0, (key.length > 40 ? 40 : key.length));
-    logInfo(`[${skjemanummer}] Skipping translation because key or value is too long [${tooLongKey}...]`)
+    logger.info(`[${skjemanummer}] Skipping translation because key or value is too long [${tooLongKey}...]`)
     scriptSummary.formsWithTooLongTranslation.push({
       skjemanummer,
       tooLongKey,
@@ -96,6 +68,7 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
       nnLength: nn?.length,
       enLength: en?.length
     })
+    skippedFormTranslationsCounters[skjemanummer] = (skippedFormTranslationsCounters[skjemanummer] || 0) + 1;
     return Promise.resolve(false)
   }
   const existsRes = await client.query(
@@ -132,7 +105,7 @@ const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async 
 
 const insertFormPromise = (form) => async () => {
   if (form.properties.skjemanummer.length > 24) {
-    logInfo(`[${form.properties.skjemanummer}] Skipping form because skjemanummer is too long (_id=${form._id}, title=${form.title})`)
+    logger.info(`[${form.properties.skjemanummer}] Skipping form because skjemanummer is too long (_id=${form._id}, title=${form.title})`)
     scriptSummary.tooLongSkjemannummer.push(form.properties.skjemanummer)
     return Promise.resolve()
   }
@@ -143,7 +116,7 @@ const insertFormPromise = (form) => async () => {
     let formId = null
     if (existsRes.rows.length) {
       formId = existsRes.rows[0].id
-      logInfo(`[${form.properties.skjemanummer}] Skipping insert, form already exists (dbId=${formId})`)
+      logger.info(`[${form.properties.skjemanummer}] Skipping insert, form already exists (dbId=${formId})`)
     } else {
       if (!dryRun) {
         const res = await client.query(
@@ -168,9 +141,8 @@ const insertFormPromise = (form) => async () => {
           ]
         )
       }
-      logInfo(`[${form.properties.skjemanummer}] Form inserted (dbId=${formId})`)
     }
-    const translations = await fetchTranslations(form.path)
+    const translations = await formioApi.fetchTranslations(form.path)
     const t = extractLanguageAndI18n(translations);
     if (translations.length > 2) {
       scriptSummary.moreThanTwoTranslations.push({
@@ -180,30 +152,17 @@ const insertFormPromise = (form) => async () => {
     }
     const translationPromises = t.keys.map(key => insertTranslations(client, formId, key, t.nn[key], t.en[key], form.properties.skjemanummer))
     await Promise.all(translationPromises.map(insertT => insertT()))
-    logInfo(`[${form.properties.skjemanummer}] Form translations inserted (${t.keys.length} keys, ${skippedFormTranslationsCounters[form.properties.skjemanummer] || 0} skipped)`)
-
     await client.query('COMMIT')
+    scriptSummary.successInsertsSkjemanummer.push(form.properties.skjemanummer);
+    logger.info(`[${form.properties.skjemanummer}] Form inserted (dbId=${formId}, translations={inserted: ${t.keys.length}, skipped: ${skippedFormTranslationsCounters[form.properties.skjemanummer] || 0}})`)
   } catch (e) {
+    scriptSummary.failedInsertsSkjemanummer.push(form.properties.skjemanummer);
+    logger.error(`[${form.properties.skjemanummer}] Failed to insert (_id=${form._id})`, e)
     await client.query('ROLLBACK')
-    logError(`[${form.properties.skjemanummer}] Failed to insert (_id=${form._id})`, e)
   } finally {
     await client.release()
   }
   return Promise.resolve()
-}
-
-const fetchForms = async () => {
-  try {
-    logInfo(`Fetching forms...`)
-    const response = await fetch(`${formioBaseUrl}/form?type=form&tag=nav-skjema&limit=${maxNumberOfForms}`)
-    if (!response.ok) {
-      throw new Error(`Failed to fetch forms: ${response.statusText}`)
-    }
-    return await response.json()
-  } catch (err) {
-    logError(`Error fetching forms:`, err)
-    throw err
-  }
 }
 
 const transformGlobalTranslations = (globalTranslation) => {
@@ -220,8 +179,8 @@ const transformGlobalTranslations = (globalTranslation) => {
 }
 
 const importGlobalTranslations = async () => {
-  const globalTranslations = await fetchGlobalTranslations();
-  logInfo(`Processing ${globalTranslations.length} global translations...`)
+  const globalTranslations = await formioApi.fetchGlobalTranslations();
+  logger.info(`Processing ${globalTranslations.length} global translations...`)
   const flattened = transformGlobalTranslations(globalTranslations);
   let counterNew = 0;
   let counterExisting = 0;
@@ -267,10 +226,10 @@ const importGlobalTranslations = async () => {
     });
     await Promise.all(promises.map(f => f()))
     await client.query('COMMIT')
-    logInfo(`Global translations inserted (${counterNew} new, ${counterExisting} existing)`)
+    logger.info(`Global translations inserted (${counterNew} new, ${counterExisting} existing)`)
   } catch (e) {
     await client.query('ROLLBACK')
-    logError(`Failed to insert global translations`, e)
+    logger.error(`Failed to insert global translations`, e)
   } finally {
     await client.release()
   }
@@ -282,14 +241,14 @@ const main = async () => {
       console.log("::::::::: DRY RUN ::::::::::")
     }
     await importGlobalTranslations();
-    const forms = (await fetchForms()).filter(form => !!form.properties && form.properties.isTestForm !== true)
-    logInfo(`Importing ${forms.length} forms...`)
+    const forms = (await formioApi.fetchForms()).filter(form => !!form.properties && form.properties.isTestForm !== true)
+    logger.info(`Importing ${forms.length} forms...`)
     const promises = forms.map(form => insertFormPromise(form))
     await Promise.all(promises.map(f => f()))
   } catch (err) {
-    logError(`Error importing data:`, err)
+    logger.error(`Error importing data:`, err)
   } finally {
-    logInfo(`Summary: ${JSON.stringify(scriptSummary)}`)
+    logger.info(`Summary: ${JSON.stringify(scriptSummary)}`)
     await pool.end()
   }
 }
