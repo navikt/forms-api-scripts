@@ -45,8 +45,8 @@ const skippedFormTranslationsCounters = {};
 const insertTranslations = (client, formId, key, nn, en, skjemanummer) => async () => {
   if (key.length > maxLengthTranslation || nn?.length > maxLengthTranslation || en?.length > maxLengthTranslation) {
     let tooLongKey = key.substring(0, (key.length > 40 ? 40 : key.length));
-    logger.info(`[${skjemanummer}] Skipping translation because key or value is too long [${tooLongKey}...]`)
-    summary.skjemanummer(skjemanummer).tooLongTranslations(tooLongKey, {nn: nn?.length, en: en?.length, key: key.length});
+    logger.info(`[${skjemanummer}] Skipping translation because key or value is too long [${tooLongKey} ...]`)
+    summary.skjemanummer(skjemanummer).tooLongTranslations(`${tooLongKey} ...`, {nn: nn?.length, en: en?.length, key: key.length});
     skippedFormTranslationsCounters[skjemanummer] = (skippedFormTranslationsCounters[skjemanummer] || 0) + 1;
     return Promise.resolve(false)
   }
