@@ -158,9 +158,20 @@ const insertFormPromise = (form) => async () => {
         ),
         []
       )
+      const languages = (form.properties.publishedLanguages || []).map(lang => {
+        if (lang === "nb-NO") {
+          return "nb";
+        } else if (lang === "nn-NO") {
+          return "nn"
+        }
+        return lang;
+      })
+      if (!languages.includes("nb")) {
+        languages.push("nb")
+      }
       await client.query(
-        'INSERT INTO form_publication(form_revision_id, published_form_translation_id, published_global_translation_id, created_at, created_by) VALUES($1,$2,$3,$4,$5) RETURNING id',
-        [formRevisionId, formTranslationPublicationId, globalTranslationsPublicationId, form.properties.published, "IMPORT"]
+        'INSERT INTO form_publication(form_revision_id, published_form_translation_id, published_global_translation_id, languages, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',
+        [formRevisionId, formTranslationPublicationId, globalTranslationsPublicationId, JSON.stringify(languages), form.properties.published, "IMPORT"]
       )
 
     }
