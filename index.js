@@ -143,21 +143,23 @@ const insertFormPromise = (form) => async () => {
     const translationPromises = t.keys.map(key => insertTranslations(client, formId, key, t.nn[key], t.en[key], form.properties.skjemanummer))
     const translationRevisionIds = (await Promise.all(translationPromises.map(insertT => insertT()))).filter(id => !!id);
     logger.info(`[${form.properties.skjemanummer}] Form translations imported (${translationRevisionIds.length})`)
-    if (translationRevisionIds.length && !dryRun && form.properties.published && !form.properties.unpublished) {
+    if (!dryRun && form.properties.published && !form.properties.unpublished) {
       logger.info(`[${form.properties.skjemanummer}] Publishing form and translations (${form.properties.published})...`)
       const publicationRes = await client.query(
         'INSERT INTO published_form_translation(form_id, created_at, created_by) VALUES($1,$2,$3) RETURNING id',
         [formId, form.properties.published, "IMPORT"]
       )
       const formTranslationPublicationId = publicationRes.rows[0].id
-      const publishedRevisionValues = translationRevisionIds.map(revisionId => [formTranslationPublicationId, revisionId]);
-      await client.query(
-        pgFormat(
-          'INSERT INTO published_form_translation_revision(published_form_translation_id, form_translation_revision_id) VALUES %L',
-          publishedRevisionValues
-        ),
-        []
-      )
+      if (translationRevisionIds.length) {
+        const publishedRevisionValues = translationRevisionIds.map(revisionId => [formTranslationPublicationId, revisionId]);
+        await client.query(
+          pgFormat(
+            'INSERT INTO published_form_translation_revision(published_form_translation_id, form_translation_revision_id) VALUES %L',
+            publishedRevisionValues
+          ),
+          []
+        )
+      }
       const languages = (form.properties.publishedLanguages || []).map(lang => {
         if (lang === "nb-NO") {
           return "nb";
