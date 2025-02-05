@@ -172,8 +172,8 @@ const insertFormPromise = (form) => async () => {
         languages.push("nb")
       }
       await client.query(
-        'INSERT INTO form_publication(form_revision_id, published_form_translation_id, published_global_translation_id, languages, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6) RETURNING id',
-        [formRevisionId, formTranslationPublicationId, globalTranslationsPublicationId, JSON.stringify(languages), form.properties.published, "IMPORT"]
+        'INSERT INTO form_publication(form_id, form_revision_id, published_form_translation_id, published_global_translation_id, languages, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+        [formId, formRevisionId, formTranslationPublicationId, globalTranslationsPublicationId, JSON.stringify(languages), form.properties.published, "IMPORT"]
       )
 
     }
