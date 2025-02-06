@@ -47,7 +47,7 @@ const fetchGlobalTranslations = async () => {
 const fetchForms = async () => {
   try {
     logger.info(`Fetching forms...`)
-    const response = await fetch(`${formioBaseUrl}/form?type=form&tag=nav-skjema&limit=${maxNumberOfForms}`)
+    const response = await fetch(`${formioBaseUrl}/form?type=form&tags=nav-skjema&limit=${maxNumberOfForms}`)
     if (!response.ok) {
       throw new Error(`Failed to fetch forms: ${response.statusText}`)
     }
