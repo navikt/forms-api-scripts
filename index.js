@@ -4,6 +4,7 @@ import config from './src/config.js'
 import logger from './src/logger.js'
 import formioApi from './src/formio-api.js'
 import summary from "./src/summary.js";
+import {getPublicationInfo, getPublishedLanguages} from "./src/formUtils.js";
 
 const {Pool} = pg;
 
@@ -143,41 +144,33 @@ const insertFormPromise = (form) => async () => {
     const translationPromises = t.keys.map(key => insertTranslations(client, formId, key, t.nn[key], t.en[key], form.properties.skjemanummer))
     const translationRevisionIds = (await Promise.all(translationPromises.map(insertT => insertT()))).filter(id => !!id);
     logger.info(`[${form.properties.skjemanummer}] Form translations imported (${translationRevisionIds.length})`)
-    if (!dryRun && form.properties.published && !form.properties.unpublished) {
-      logger.info(`[${form.properties.skjemanummer}] Publishing form and translations (${form.properties.published})...`)
-      const publicationRes = await client.query(
-        'INSERT INTO published_form_translation(form_id, created_at, created_by) VALUES($1,$2,$3) RETURNING id',
-        [formId, form.properties.published, "IMPORT"]
-      )
-      const formTranslationPublicationId = publicationRes.rows[0].id
-      if (translationRevisionIds.length) {
-        const publishedRevisionValues = translationRevisionIds.map(revisionId => [formTranslationPublicationId, revisionId]);
+    const { publicationStatus, publicationCreatedAt } = getPublicationInfo(form);
+    if (publicationStatus) {
+      logger.info(`[${form.properties.skjemanummer}] Publishing form and translations (${publicationStatus} - ${publicationCreatedAt})...`)
+      if (!dryRun) {
+        const publicationRes = await client.query(
+          'INSERT INTO published_form_translation(form_id, created_at, created_by) VALUES($1,$2,$3) RETURNING id',
+          [formId, publicationCreatedAt, "IMPORT"]
+        )
+        const formTranslationPublicationId = publicationRes.rows[0].id
+        if (translationRevisionIds.length) {
+          const publishedRevisionValues = translationRevisionIds.map(revisionId => [formTranslationPublicationId, revisionId]);
+          await client.query(
+            pgFormat(
+              'INSERT INTO published_form_translation_revision(published_form_translation_id, form_translation_revision_id) VALUES %L',
+              publishedRevisionValues
+            ),
+            []
+          )
+        }
+        const languages = getPublishedLanguages(form);
         await client.query(
-          pgFormat(
-            'INSERT INTO published_form_translation_revision(published_form_translation_id, form_translation_revision_id) VALUES %L',
-            publishedRevisionValues
-          ),
-          []
+          'INSERT INTO form_publication(form_id, form_revision_id, published_form_translation_id, published_global_translation_id, languages, created_at, created_by, status) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id',
+          [formId, formRevisionId, formTranslationPublicationId, globalTranslationsPublicationId, JSON.stringify(languages), publicationCreatedAt, "IMPORT", publicationStatus]
         )
       }
-      const languages = (form.properties.publishedLanguages || []).map(lang => {
-        if (lang === "nb-NO") {
-          return "nb";
-        } else if (lang === "nn-NO") {
-          return "nn"
-        }
-        return lang;
-      })
-      if (!languages.includes("nb")) {
-        languages.push("nb")
-      }
-      await client.query(
-        'INSERT INTO form_publication(form_id, form_revision_id, published_form_translation_id, published_global_translation_id, languages, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
-        [formId, formRevisionId, formTranslationPublicationId, globalTranslationsPublicationId, JSON.stringify(languages), form.properties.published, "IMPORT"]
-      )
-
+      logger.info(`[${form.properties.skjemanummer}] Form and translations published ok (status=${publicationStatus})`)
     }
-    logger.info(`[${form.properties.skjemanummer}] Form and translations published ok`)
 
     await client.query('COMMIT')
     summary.skjemanummer(form.properties.skjemanummer).successInsert();
@@ -291,7 +284,7 @@ const main = async () => {
       console.log("::::::::: DRY RUN ::::::::::")
     }
     await importGlobalTranslations();
-    const forms = (await formioApi.fetchForms()).filter(form => !!form.properties && form.properties.isTestForm !== true)
+    const forms = (await formioApi.fetchForms()).filter(form => !!form.properties)
     logger.info(`Importing ${forms.length} forms...`)
     const promises = forms.map(form => insertFormPromise(form))
     await Promise.all(promises.map(f => f()))
