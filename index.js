@@ -129,11 +129,27 @@ const insertFormPromise = (form) => async () => {
             form.title,
             JSON.stringify(form.components),
             JSON.stringify(form.properties),
-            form.properties.modified || new Date().toISOString(),
-            form.properties.modifiedBy || 'ukjent',
+            form.properties.published || form.properties.modified || new Date().toISOString(),
+            form.properties.publishedBy || form.properties.modifiedBy || 'ukjent',
           ]
         )
         formRevisionId = revisionRes.rows[0].id
+        if (form.properties.published && form.properties.modified && (form.properties.published !== form.properties.modified)) {
+          // form has unpublished changes, insert another revision to achieve correct form status
+          logger.info(`[${form.properties.skjemanummer}] Form has unpublished changes, inserting second revision to achieve correct form status`)
+          await client.query(
+            'INSERT INTO form_revision(form_id, revision, title, components, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+            [
+              id,
+              2,
+              form.title,
+              JSON.stringify(form.components),
+              JSON.stringify(form.properties),
+              form.properties.modified,
+              form.properties.modifiedBy || 'ukjent',
+            ]
+          )
+        }
       }
     }
     const translations = await formioApi.fetchTranslations(form.path)
