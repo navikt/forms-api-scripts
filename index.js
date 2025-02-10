@@ -121,13 +121,20 @@ const insertFormPromise = (form) => async () => {
         )
         const {id} = res.rows[0]
         formId = id
+        const componentsRes = await client.query(
+          'INSERT INTO form_revision_components(value) VALUES($1) RETURNING id',
+          [
+            JSON.stringify(form.components)
+          ]
+        )
+        const componentsId = componentsRes.rows[0].id
         const revisionRes = await client.query(
-          'INSERT INTO form_revision(form_id, revision, title, components, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+          'INSERT INTO form_revision(form_id, revision, title, form_revision_components_id, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
           [
             id,
             1,
             form.title,
-            JSON.stringify(form.components),
+            componentsId,
             JSON.stringify(form.properties),
             form.properties.published || form.properties.modified || new Date().toISOString(),
             form.properties.publishedBy || form.properties.modifiedBy || 'ukjent',
@@ -138,12 +145,12 @@ const insertFormPromise = (form) => async () => {
           // form has unpublished changes, insert another revision to achieve correct form status
           logger.info(`[${form.properties.skjemanummer}] Form has unpublished changes, inserting second revision to achieve correct form status`)
           await client.query(
-            'INSERT INTO form_revision(form_id, revision, title, components, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
+            'INSERT INTO form_revision(form_id, revision, title, form_revision_components_id, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
             [
               id,
               2,
               form.title,
-              JSON.stringify(form.components),
+              componentsId,
               JSON.stringify(form.properties),
               form.properties.modified,
               form.properties.modifiedBy || 'ukjent',
