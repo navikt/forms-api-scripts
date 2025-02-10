@@ -20,7 +20,7 @@ if (!formioBaseUrl) {
 
 let globalTranslationsPublicationId = undefined;
 
-const pool = new Pool()
+const pool = new Pool({max: 5})
 
 const extractLanguageAndI18n = (data) => {
   const keys = []
