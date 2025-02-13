@@ -4,7 +4,7 @@ import config from './src/config.js'
 import logger from './src/logger.js'
 import formioApi from './src/formio-api.js'
 import summary from "./src/summary.js";
-import {getPublicationInfo, getPublishedLanguages} from "./src/formUtils.js";
+import { getFormLock, getPublicationInfo, getPublishedLanguages } from "./src/formUtils.js";
 
 const {Pool} = pg;
 
@@ -110,17 +110,18 @@ const insertFormPromise = (form) => async () => {
       formRevisionId = formRevisionRes.rows[0].id;
     } else {
       if (!dryRun) {
+        const formLock = getFormLock(form)
         const res = await client.query(
-          'INSERT INTO form(skjemanummer, path, created_at, created_by) VALUES($1,$2,$3,$4) RETURNING id',
+          'INSERT INTO form(skjemanummer, path, created_at, created_by, lock) VALUES($1,$2,$3,$4,$5) RETURNING id',
           [
             form.properties.skjemanummer,
             form.path,
             form.created,
             'IMPORT',
+            formLock
           ]
         )
-        const {id} = res.rows[0]
-        formId = id
+        formId = res.rows[0].id
         const componentsRes = await client.query(
           'INSERT INTO form_revision_components(value) VALUES($1) RETURNING id',
           [
@@ -131,7 +132,7 @@ const insertFormPromise = (form) => async () => {
         const revisionRes = await client.query(
           'INSERT INTO form_revision(form_id, revision, title, form_revision_components_id, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
           [
-            id,
+            formId,
             1,
             form.title,
             componentsId,
@@ -147,7 +148,7 @@ const insertFormPromise = (form) => async () => {
           await client.query(
             'INSERT INTO form_revision(form_id, revision, title, form_revision_components_id, properties, created_at, created_by) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING id',
             [
-              id,
+              formId,
               2,
               form.title,
               componentsId,
@@ -167,13 +168,13 @@ const insertFormPromise = (form) => async () => {
     const translationPromises = t.keys.map(key => insertTranslations(client, formId, key, t.nn[key], t.en[key], form.properties.skjemanummer))
     const translationRevisionIds = (await Promise.all(translationPromises.map(insertT => insertT()))).filter(id => !!id);
     logger.info(`[${form.properties.skjemanummer}] Form translations imported (${translationRevisionIds.length})`)
-    const { publicationStatus, publicationCreatedAt } = getPublicationInfo(form);
+    const { publicationStatus, publicationCreatedAt, publicationCreatedBy } = getPublicationInfo(form);
     if (publicationStatus) {
       logger.info(`[${form.properties.skjemanummer}] Publishing form and translations (${publicationStatus} - ${publicationCreatedAt})...`)
       if (!dryRun) {
         const publicationRes = await client.query(
           'INSERT INTO published_form_translation(form_id, created_at, created_by) VALUES($1,$2,$3) RETURNING id',
-          [formId, publicationCreatedAt, "IMPORT"]
+          [formId, publicationCreatedAt, (publicationCreatedBy || "IMPORT")]
         )
         const formTranslationPublicationId = publicationRes.rows[0].id
         if (translationRevisionIds.length) {
